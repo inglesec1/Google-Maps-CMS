@@ -1,0 +1,526 @@
+import { Component, OnInit, Inject, NgZone } from '@angular/core';
+import { Observable } from 'rxjs/Rx';   //update rxjs
+import 'rxjs/add/operator/map';
+
+import { Map, Marker } from '../../models/map';
+import { MapService } from '../../services/map/map.service';
+import { LoginService } from '../../services/login/login.service';
+
+import { } from '@types/google-maps';
+
+import { MatDialog, MatDialogRef, MAT_DIALOG_DATA } from '@angular/material';
+
+
+@Component({
+  selector: 'app-map',
+  templateUrl: './map.component.html',
+  styleUrls: ['./map.component.css']
+})
+export class MapComponent implements OnInit {
+  Map: google.maps.Map;
+  Overlay: google.maps.GroundOverlay;
+  Model = new Map();
+  Server = "cs.newpaltz.edu/p/f18-01";
+  clientLogged;
+  draggedMarkerIndex: number;
+
+
+
+  constructor(private _Map: MapService,
+    private _Login: LoginService,
+    public _dialog: MatDialog,
+    @Inject(NgZone) public _zone: NgZone, ) {
+    this.clientLogged = this._Login.clientLogged;
+    if (!this.clientLogged) {
+      this._Login.redirectLogin();
+    }
+  }
+
+  ngOnInit() {
+    //PRE-LOAD OVERLAY
+    var imageBounds = {
+      north: 41.745563,
+      south: 41.731452,
+      east: -74.07833,
+      west: -74.090992
+    };
+    this.Overlay = new google.maps.GroundOverlay(
+      "http://" + this.Server + "/npmap.png",
+      imageBounds
+    );
+
+    this._Map.refresh().subscribe(
+      (data) => {
+        if (data.success) {
+          console.log("Request success");
+          this.Model = data.map;
+          this.refreshCallback();
+        }
+        else
+          console.log("Request error");
+      },
+      (err) => {
+        console.log(err);
+      }
+    );
+  }
+
+
+
+
+  refreshCallback() {
+    console.log("Configuring map...");
+
+    //GENERATE MAP
+    this.Map = new google.maps.Map(document.getElementById('map'), {
+      center: this.Model.Position,
+      zoom: this.Model.Zoom,
+      disableDefaultUI: true,
+      disableDoubleClickZoom: true
+    });
+
+    //CONFIG OVERLAY
+    this.Overlay.setMap(this.Map);
+
+    //CONFIG MAP w/ MARKERS | CONFIG CLIENT MODEL
+    for (var i = 0; i < this.Model.Markers.length; i++) {
+      var location = new google.maps.LatLng(this.Model.Markers[i].Position.lat, this.Model.Markers[i].Position.lng);
+      var tempMapMarker
+      tempMapMarker = new google.maps.Marker({
+        position: location,
+        draggable: true,
+        map: this.Map
+      });
+      if (this.Model.Markers[i].MarkerIcon != "") {
+        tempMapMarker.setIcon("http://" + this.Server + "/" + this.Model.Markers[i].MarkerIcon);
+      }
+      this.Model.MapMarkers.push(tempMapMarker);
+
+      //ATTACH EVENT LISTENERS TO MARKERS
+      tempMapMarker.addListener('click', (e) => {
+        this._zone.run(() => {
+          this.markerEdit(e.latLng);
+        });
+      });
+      tempMapMarker.addListener('dragstart', (e) => {
+        this._zone.run(() => {
+          this.markerDragstart(e.latLng);
+        });
+      });
+      tempMapMarker.addListener('dragend', (e) => {
+        this._zone.run(() => {
+          this.markerDragend(e.latLng);
+        });
+      });
+    }
+
+    //ATTACH EVENT LISTENERS TO MAP
+    this.Overlay.addListener('dblclick', (e) => {
+      this._zone.run(() => {
+        this.markerCreate(e.latLng);
+      });
+    });
+    this.Map.addListener('dblclick', (e) => {
+      this._zone.run(() => {
+        this.markerCreate(e.latLng);
+      });
+    });
+
+    console.log("Map configured");
+  }
+
+
+
+
+
+
+
+  markerCreate(location: google.maps.LatLng) {
+    var tempModelMarker = new Marker();
+    tempModelMarker.Position = { lat: location.lat(), lng: location.lng() };
+
+    this._Map.addMarker(tempModelMarker).subscribe(
+      (data) => {
+        if (data.success) {
+          console.log("Request success");
+
+          //ADD MARKER TO CLIENT MODEL
+          this.Model.Markers.push(tempModelMarker);
+          var tempMapMarker = new google.maps.Marker({
+            position: location,
+            draggable: true,
+            map: this.Map
+          });
+          this.Model.MapMarkers.push(tempMapMarker);
+
+          //ATTACH EVENT LISTENERS TO MARKER
+          tempMapMarker.addListener('click', (e) => {
+            this._zone.run(() => {
+              this.markerEdit(e.latLng);
+            });
+          });
+          tempMapMarker.addListener('dragstart', (e) => {
+            this._zone.run(() => {
+              this.markerDragstart(e.latLng);
+            });
+          });
+          tempMapMarker.addListener('dragend', (e) => {
+            this._zone.run(() => {
+              this.markerDragend(e.latLng);
+            });
+          });
+        }
+        else
+          console.log("Request error");
+      },
+      (err) => {
+        console.log(err);
+      }
+    );
+  }
+
+
+
+
+
+  markerEdit(location: google.maps.LatLng) {
+    let editIndex = this.getMarkerIndex(location);
+    let editMarker = this.Model.Markers[editIndex];
+
+    let update = false;
+    let updateimg = false;
+    let updatemp3 = false;
+    let updateicon = false;
+    let updatemarkericon = false;
+    let imgfile: File;
+    let mp3file: File;
+    let iconfile: File;
+    let markericonfile: File;
+    let markerIconSet = false;
+    if (this.Model.Markers[editIndex].MarkerIcon != "") {
+      markerIconSet = true;
+    }
+
+
+    let dialogRef = this._dialog.open(MarkerEditDialog, {
+      data: { title: editMarker.Title, subtitle: editMarker.Subtitle, description: editMarker.Description }
+    });
+    dialogRef.afterClosed().subscribe(
+      (result) => {
+        if (result != null) {
+          if (result.delete) {
+            this._Map.deleteMarker(editIndex).subscribe(
+              (data) => {
+                if (data.success) {
+                  console.log("Request success");
+                  this.Model.MapMarkers.splice(editIndex, 1)[0].setMap(null);
+                  this.Model.Markers.splice(editIndex, 1);
+                }
+                else {
+                  console.log("Request error");
+                }
+              },
+              (err) => {
+                console.log(err);
+              }
+            );
+            return;
+          }
+          if (result.title != "" && result.title != editMarker.Title) {
+            update = true;
+            editMarker.Title = result.title;
+          }
+          if (result.subtitle != "" && result.subtitle != editMarker.Subtitle) {
+            update = true;
+            editMarker.Subtitle = result.subtitle;
+          }
+          if (result.description != "" && result.description != editMarker.Description) {
+            update = true;
+            editMarker.Description = result.description;
+          }
+          if (result.imgfile != null) {
+            updateimg = true;
+            imgfile = result.imgfile;
+          }
+          if (result.iconfile != null) {
+            updateicon = true;
+            iconfile = result.iconfile;
+          }
+          if (result.mp3file != null) {
+            updatemp3 = true;
+            mp3file = result.mp3file;
+          }
+          if (result.markericonfile != null) {
+            updatemarkericon = true;
+            markericonfile = result.markericonfile;
+          }
+          if (update) {
+            this._Map.editMarker(editIndex, editMarker).subscribe(
+              (data) => {
+                if (data.success) {
+                  console.log("Request success");
+                  this.Model.Markers[editIndex] = editMarker;
+                }
+                else {
+                  console.log("Request error");
+                }
+              },
+              (err) => {
+                console.log(err);
+              }
+            );
+          }
+          if (updatemp3) {
+            this._Map.editMarkerAddMp3(editIndex, mp3file).subscribe(
+              (data) => {
+                if (data.success) {
+                  console.log("Request success");
+                  this.Model.Markers[editIndex].Audio = data.name;
+                }
+                else {
+                  console.log("Request error");
+
+                }
+              },
+              (err) => {
+                console.log(err);
+              }
+            );
+          }
+          if (updateicon) {
+            this._Map.editMarkerAddIcon(editIndex, iconfile).subscribe(
+              (data) => {
+                if (data.success) {
+                  console.log("Request success");
+                  this.Model.Markers[editIndex].Icon = data.name;
+                }
+                else {
+                  console.log("Request error");
+                }
+              },
+              (err) => {
+                console.log(err);
+              }
+            );
+          }
+          if (updateimg) {
+            this._Map.editMarkerAddImg(editIndex, imgfile).subscribe(
+              (data) => {
+                if (data.success) {
+                  console.log("Request success");
+                  this.Model.Markers[editIndex].Image = data.name;
+                }
+                else {
+                  console.log("Request error");
+                }
+              },
+              (err) => {
+                console.log(err);
+              }
+            );
+          }
+          if (updatemarkericon) {
+            this._Map.editMarkerAddMarkerIcon(editIndex, markericonfile).subscribe(
+              (data) => {
+                if (data.success) {
+                  console.log("Request success");
+                  this.Model.Markers[editIndex].MarkerIcon = data.name;
+                  this.Model.MapMarkers[editIndex].setIcon("http://" + this.Server + "/" + this.Model.Markers[editIndex].MarkerIcon);
+                }
+                else {
+                  console.log("Request error");
+                }
+              },
+              (err) => {
+                console.log(err);
+              }
+            );
+          }
+        }
+        else if (!updateimg || !updateicon || !updatemarkericon || !updatemp3 || !update)
+          console.log('Dialog canceled');
+      }
+    );
+
+  }
+
+
+
+  infoButtonToggle() {
+    let dialogRef = this._dialog.open(infoButtonDialog, {
+      data: { server: this.Server }
+    });
+  }
+
+  setButtonToggle() {
+    let dialogRef = this._dialog.open(setButtonDialog, {
+      data: { server: this.Server }
+    });
+    dialogRef.afterClosed().subscribe(
+      (result) => {
+        if (result.success) {
+          let position = { lat: this.Map.getCenter().lat(), lng: this.Map.getCenter().lng() };
+          let zoom = this.Map.getZoom();
+          this._Map.editCenter(position, zoom).subscribe(
+            (result) => {
+              if (result.success) {
+                console.log("Request success");
+                this.Model.Position.lat = position.lat;
+                this.Model.Position.lng = position.lng;
+                this.Model.Zoom = zoom;
+              }
+              else {
+                console.log("Request error");
+              }
+            }
+          );
+        }
+      }
+    );
+  }
+
+  getMarkerIndex = (location: google.maps.LatLng) =>
+    this.Model.MapMarkers.findIndex(x => x.position.lat() == location.lat() && x.position.lng() == location.lng());
+  markerDragstart(location: google.maps.LatLng) {
+    this.draggedMarkerIndex = this.getMarkerIndex(location);
+    console.log(this.draggedMarkerIndex);
+  }
+  markerDragend(location: google.maps.LatLng) {
+    this.updateMarkerLocation(location, this.draggedMarkerIndex);
+  }
+  updateMarkerLocation = (endLocation: google.maps.LatLng, index: number) => {
+    this.Model.Markers[index].Position.lat = endLocation.lat();
+    this.Model.Markers[index].Position.lng = endLocation.lng();
+    this._Map.dragMarker(index, { lat: this.Model.Markers[index].Position.lat, lng: this.Model.Markers[index].Position.lng }).subscribe(
+      (result) => {
+        if (result.success) {
+          console.log("Request success");
+        }
+        else {
+          console.log("Request error");
+        }
+      }
+    );
+  }
+}
+
+
+
+
+
+
+
+
+@Component({
+  selector: 'app-map',
+  templateUrl: './map.dialog.component.html',
+  styleUrls: ['./map.component.css']
+})
+export class MarkerEditDialog {
+  imgFileToUpload: File = null;
+  iconFileToUpload: File = null;
+  mp3FileToUpload: File = null;
+  markerIconFileToUpload: File = null;
+
+  constructor(
+    public dialogRef: MatDialogRef<MarkerEditDialog>,
+    @Inject(MAT_DIALOG_DATA) public data: any) {
+  }
+
+  onCancel() {
+    this.dialogRef.close();
+  }
+
+  onDelete() {
+    let data = { delete: true };
+    this.dialogRef.close(data);
+  }
+
+  onSubmit(data) {
+    data.delete = false;
+    if (this.imgFileToUpload != null) {
+      data.imgfile = this.imgFileToUpload;
+    }
+    if (this.iconFileToUpload != null) {
+      data.iconfile = this.iconFileToUpload;
+    }
+    if (this.mp3FileToUpload != null) {
+      data.mp3file = this.mp3FileToUpload;
+    }
+    if (this.markerIconFileToUpload != null) {
+      data.markericonfile = this.markerIconFileToUpload;
+    }
+    this.dialogRef.close(data);
+  }
+
+  appendImgToForm(files: FileList) {
+    this.imgFileToUpload = files.item(0);
+  }
+
+  appendIconToForm(files: FileList) {
+    this.iconFileToUpload = files.item(0);
+  }
+
+  appendMp3ToForm(files: FileList) {
+    this.mp3FileToUpload = files.item(0);
+  }
+
+  appendMarkerIconToForm(files: FileList) {
+    this.markerIconFileToUpload = files.item(0);
+  }
+}
+
+
+
+
+
+
+@Component({
+  selector: 'app-map',
+  templateUrl: './map.info.component.html',
+  styleUrls: ['./map.component.css']
+})
+export class infoButtonDialog {
+
+  constructor(
+    public dialogRef: MatDialogRef<infoButtonDialog>,
+    @Inject(MAT_DIALOG_DATA) public data: any) { }
+
+  onNoClick(): void {
+    this.dialogRef.close();
+  }
+
+  onCancel() {
+    this.dialogRef.close();
+  }
+}
+
+
+
+
+
+
+@Component({
+  selector: 'app-map',
+  templateUrl: './map.set.component.html',
+  styleUrls: ['./map.component.css']
+})
+export class setButtonDialog {
+
+  constructor(
+    public dialogRef: MatDialogRef<setButtonDialog>,
+    @Inject(MAT_DIALOG_DATA) public data: any) { }
+
+  onNoClick(): void {
+    this.dialogRef.close();
+  }
+
+  onOkClick() {
+    let data = { success: true };
+    this.dialogRef.close(data);
+  }
+
+  onCancel() {
+    this.dialogRef.close();
+  }
+}
